@@ -2,17 +2,14 @@ import requests
 import logging
 import json
 
-# === Настройки ===
+# === Константа для Bybit P2P ===
 BYBIT_URL = "https://api2.bybit.com/fiat/otc/item/online"
 
-# Функция получения P2P-данных
-def get_p2p_data(side="1", token="USDT", currency="KGS", rows=5):
+def get_p2p_data(side="1", token="USDT", currency="KGS", rows=10):
     """
     Получает список объявлений P2P с Bybit.
-    side = "1" — покупка (BUY), "0" — продажа (SELL)
-    token = "USDT" — валюта сделки
-    currency = "KGS" — фиатная валюта
-    rows = количество объявлений
+    side = "1" — покупка (BUY)
+    side = "0" — продажа (SELL)
     """
     payload = {
         "userId": "",
@@ -24,7 +21,7 @@ def get_p2p_data(side="1", token="USDT", currency="KGS", rows=5):
         "page": 1,
         "amount": "",
         "authMaker": False,
-        "canTrade": False,
+        "canTrade": False
     }
 
     headers = {
@@ -34,15 +31,27 @@ def get_p2p_data(side="1", token="USDT", currency="KGS", rows=5):
     }
 
     try:
-        response = requests.post(BYBIT_URL, data=json.dumps(payload), headers=headers, timeout=10)
+        response = requests.post(BYBIT_URL, json=payload, headers=headers, timeout=10)
         response.raise_for_status()
         data = response.json()
 
-        if "result" not in data or "items" not in data["result"]:
-            logging.warning("⚠️ Неверный ответ Bybit: нет ключа 'result'")
+        # Универсальная проверка — может быть "result" или сразу "data"
+        items = None
+        if isinstance(data, dict):
+            if "result" in data and "items" in data["result"]:
+                items = data["result"]["items"]
+            elif "items" in data:
+                items = data["items"]
+            elif "data" in data and isinstance(data["data"], list):
+                items = data["data"]
+
+        if not items:
+            logging.warning(f"⚠️ Bybit вернул пустой ответ: {data}")
             return []
 
-        return data["result"]["items"]
+        # Возвращаем объявления с ценами
+        valid = [x for x in items if "price" in x]
+        return valid
 
     except requests.exceptions.Timeout:
         logging.error("❌ Ошибка: запрос к Bybit истёк по тайм-ауту.")
