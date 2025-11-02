@@ -1,41 +1,52 @@
 import requests
-import time
+import logging
+import json
 
-last_data = {"buy": None, "sell": None}
+# === Настройки ===
+BYBIT_URL = "https://api2.bybit.com/fiat/otc/item/online"
 
-def get_p2p_data(side="1"):
+# Функция получения P2P-данных
+def get_p2p_data(side="1", token="USDT", currency="KGS", rows=5):
     """
-    side = "1" -> Покупка (BUY)
-    side = "0" -> Продажа (SELL)
+    Получает список объявлений P2P с Bybit.
+    side = "1" — покупка (BUY), "0" — продажа (SELL)
+    token = "USDT" — валюта сделки
+    currency = "KGS" — фиатная валюта
+    rows = количество объявлений
     """
-    url = "https://api2.bybit.com/fiat/otc/item/online"
     payload = {
         "userId": "",
-        "tokenId": "USDT",
-        "currencyId": "KGS",
+        "tokenId": token,
+        "currencyId": currency,
         "payment": [],
-        "side": side,
-        "size": 10,
+        "side": side,  # 1 — купить, 0 — продать
+        "size": rows,
         "page": 1,
+        "amount": "",
+        "authMaker": False,
+        "canTrade": False,
     }
 
-    for attempt in range(3):
-        try:
-            response = requests.post(url, json=payload, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                items = data.get("result", {}).get("items", [])
-                if items:
-                    last_data["buy" if side == "1" else "sell"] = items
-                    return items
-        except Exception as e:
-            print(f"❌ Попытка {attempt + 1}/3 — ошибка: {e}")
-            time.sleep(2)
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "user-agent": "999USDT/1.0"
+    }
 
-    cached = last_data.get("buy" if side == "1" else "sell")
-    if cached:
-        print("⚠️ Используются последние кэшированные данные Bybit.")
-        return cached
+    try:
+        response = requests.post(BYBIT_URL, data=json.dumps(payload), headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
 
-    print("🚫 Нет данных Bybit вообще.")
-    return []
+        if "result" not in data or "items" not in data["result"]:
+            logging.warning("⚠️ Неверный ответ Bybit: нет ключа 'result'")
+            return []
+
+        return data["result"]["items"]
+
+    except requests.exceptions.Timeout:
+        logging.error("❌ Ошибка: запрос к Bybit истёк по тайм-ауту.")
+        return []
+    except Exception as e:
+        logging.error(f"❌ Ошибка при получении данных Bybit: {e}")
+        return []
