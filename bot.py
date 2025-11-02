@@ -1,4 +1,7 @@
-import asyncio, logging, os, threading
+import asyncio
+import logging
+import os
+import threading
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import WebAppInfo
@@ -6,19 +9,26 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify
 from bybit_api import get_p2p_data
 
+# === Загрузка .env ===
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
 # === Telegram БОТ ===
 @dp.message(Command("start"))
 async def start(msg: types.Message):
-    web_app = WebAppInfo(url="https://твой-домен.uz/webapp/index.html")
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(types.KeyboardButton(text="💰 Открыть 999 USDT App", web_app=web_app))
+    web_app = WebAppInfo(url="https://твой-домен.uz/webapp/index.html")  # 🔗 Укажи ссылку на свою страницу
+    kb = types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text="💰 Открыть 999 USDT App", web_app=web_app)],
+            [types.KeyboardButton(text="📊 Показать курс Bybit")]
+        ],
+        resize_keyboard=True
+    )
     await msg.answer("👋 Привет! Это 999 USDT – P2P мониторинг Bybit", reply_markup=kb)
 
 @dp.message(Command("kurs"))
@@ -28,13 +38,22 @@ async def kurs(msg: types.Message):
     if not buy or not sell:
         await msg.answer("⚠️ Нет данных Bybit P2P.")
         return
-    top_buy, top_sell = float(buy[0]["price"]), float(sell[0]["price"])
-    spread = top_buy - top_sell
-    text = (f"💰 USDT/KGS P2P\n\n"
+    try:
+        top_buy, top_sell = float(buy[0]["price"]), float(sell[0]["price"])
+        spread = top_buy - top_sell
+        text = (
+            f"💰 USDT/KGS P2P\n\n"
             f"🔼 BUY: {top_buy:.2f} KGS\n"
             f"🔽 SELL: {top_sell:.2f} KGS\n"
-            f"📊 СПРЕД: {spread:.4f} KGS")
-    await msg.answer(text)
+            f"📊 СПРЕД: {spread:.4f} KGS"
+        )
+        await msg.answer(text)
+    except Exception as e:
+        await msg.answer(f"❌ Ошибка обработки данных: {e}")
+
+@dp.message(lambda message: message.text and "Показать курс" in message.text)
+async def show_kurs(msg: types.Message):
+    await kurs(msg)
 
 # === Flask API ===
 app = Flask(__name__)
