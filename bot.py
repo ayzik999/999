@@ -1,138 +1,94 @@
-# p2p_signal_bot.py
+# crypto_signal_bot_safe.py
 import asyncio
 import requests
 from aiogram import Bot, Dispatcher, types
+from aiogram.client.bot import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramNetworkError
 
 # ==============================
-# 🔧 НАСТРОЙКИ
+# ⚙️ НАСТРОЙКИ
 # ==============================
 BOT_TOKEN = "8254878765:AAGrVibWhbH4pavhfpVDk_iTdWL8N1bU0CM"
 CHAT_ID = "491116016"
-PAIR = "USDT"
-FIAT = "KGS"
-UPDATE_INTERVAL = 45  # сек между обновлениями
+CHECK_INTERVAL = 60  # проверять каждую минуту
+DROP_ALERT = -3.0    # % падения за 15 мин
+RISE_ALERT = 3.0     # % роста за 15 мин
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "TONUSDT", "SOLUSDT", "DOGEUSDT"]
 
-# API адреса
-BYBIT_P2P_URL = "https://api2.bybit.com/fiat/otc/item/online"
-BINANCE_P2P_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
-
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.MARKDOWN)
+# ==============================
+# 📡 Инициализация бота
+# ==============================
+bot_props = DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
+bot = Bot(token=BOT_TOKEN, default=bot_props)
 dp = Dispatcher()
 
 # ==============================
-# 📡 ЗАПРОСЫ К API
+# 📈 Получение данных с Bybit
 # ==============================
-def get_bybit_p2p(side="BUY"):
-    """Bybit P2P"""
-    data = {
-        "userId": "",
-        "tokenId": PAIR,
-        "currencyId": FIAT,
-        "payment": [],
-        "side": side,
-        "size": 5,
-        "page": 1,
-        "amount": "",
-        "authMaker": False
-    }
+def get_price(symbol):
+    url = f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}"
     try:
-        r = requests.post(BYBIT_P2P_URL, json=data, timeout=10)
-        offers = r.json()["result"]["items"]
-        parsed = []
-        for o in offers:
-            price = float(o["price"])
-            name = o["nickName"]
-            user_id = o["userId"]
-            link = f"https://www.bybit.com/p2p/user/{user_id}"
-            parsed.append({"price": price, "name": name, "link": link})
-        return parsed
+        r = requests.get(url, timeout=10).json()
+        return float(r["result"]["list"][0]["lastPrice"])
     except Exception as e:
-        print("❌ Ошибка Bybit:", e)
-        return []
+        print(f"Ошибка получения цены {symbol}: {e}")
+        return None
 
-
-def get_binance_p2p(side="BUY"):
-    """Binance P2P"""
-    data = {
-        "asset": PAIR,
-        "fiat": FIAT,
-        "tradeType": side,
-        "rows": 5,
-        "page": 1,
-        "payTypes": []
-    }
+def get_candle_change(symbol):
+    url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={symbol}&interval=15"
     try:
-        r = requests.post(BINANCE_P2P_URL, json=data, timeout=10)
-        offers = r.json()["data"]
-        parsed = []
-        for o in offers:
-            price = float(o["adv"]["price"])
-            name = o["advertiser"]["nickName"]
-            link = f"https://p2p.binance.com/ru/advertiserDetail?advertiserNo={o['advertiser']['userNo']}"
-            parsed.append({"price": price, "name": name, "link": link})
-        return parsed
+        r = requests.get(url, timeout=10).json()
+        candles = r["result"]["list"]
+        if not candles:
+            return None
+        open_price = float(candles[-1][1])
+        close_price = float(candles[-1][4])
+        change = (close_price - open_price) / open_price * 100
+        return change, close_price
     except Exception as e:
-        print("❌ Ошибка Binance:", e)
-        return []
+        print(f"Ошибка получения свечи {symbol}: {e}")
+        return None
 
 # ==============================
-# 💬 ФОРМИРОВАНИЕ СООБЩЕНИЙ
+# 🔁 Основной цикл сигналов
 # ==============================
-def format_message(source, color, buy_list, sell_list):
-    if not buy_list or not sell_list:
-        return f"{color} *{source}*\n⚠️ Нет данных.\n"
-
-    best_buy = buy_list[0]
-    best_sell = sell_list[0]
-    margin = (best_buy['price'] - best_sell['price']) / best_sell['price'] * 100
-
-    msg = f"{color} *{source}*\n"
-    msg += f"🔼 *Покупают (BUY)* — кто хочет купить у тебя:\n"
-    for b in buy_list:
-        msg += f"• [{b['name']}]({b['link']}) — {b['price']:.2f} {FIAT}\n"
-
-    msg += f"\n🔽 *Продают (SELL)* — у кого ты можешь купить:\n"
-    for s in sell_list:
-        msg += f"• [{s['name']}]({s['link']}) — {s['price']:.2f} {FIAT}\n"
-
-    msg += f"\n📊 *Маржа:* `{margin:.2f}%`\n"
-    if margin > 0.3:
-        msg += "💵 Есть шанс на прибыль.\n\n"
-    else:
-        msg += "😐 Маленькая маржа.\n\n"
-
-    return msg
-
-# ==============================
-# 🔁 ОСНОВНОЙ ЦИКЛ
-# ==============================
-async def monitor_loop():
+async def signal_loop():
     while True:
-        # Bybit
-        bybit_buy = get_bybit_p2p("BUY")
-        bybit_sell = get_bybit_p2p("SELL")
-        bybit_msg = format_message("Bybit P2P", "🖤", bybit_buy, bybit_sell)
+        for symbol in SYMBOLS:
+            data = get_candle_change(symbol)
+            if not data:
+                continue
 
-        # Binance
-        binance_buy = get_binance_p2p("BUY")
-        binance_sell = get_binance_p2p("SELL")
-        binance_msg = format_message("Binance P2P", "🟧", binance_buy, binance_sell)
+            change, price = data
+            msg = None
+            if change <= DROP_ALERT:
+                msg = f"📉 *{symbol}* {change:.2f}% за 15 мин\n💰 Цена: {price:.4f}\n🎯 Возможен *отскок вверх*"
+            elif change >= RISE_ALERT:
+                msg = f"📈 *{symbol}* +{change:.2f}% за 15 мин\n💰 Цена: {price:.4f}\n⚠️ Возможна *фиксация прибыли*"
 
-        full_msg = bybit_msg + binance_msg
-        try:
-            await bot.send_message(CHAT_ID, full_msg)
-        except Exception as e:
-            print("Ошибка Telegram:", e)
+            if msg:
+                try:
+                    await bot.send_message(CHAT_ID, msg, timeout=30)
+                except TelegramNetworkError as e:
+                    print(f"❌ Telegram недоступен: {e}")
+                except Exception as e:
+                    print(f"❌ Ошибка отправки сообщения: {e}")
 
-        await asyncio.sleep(UPDATE_INTERVAL)
+        await asyncio.sleep(CHECK_INTERVAL)
 
 # ==============================
-# ▶️ ЗАПУСК
+# ▶️ Запуск
 # ==============================
 async def main():
-    await bot.send_message(CHAT_ID, "🤖 P2P Signal Bot запущен. Следим за Bybit (🖤) и Binance (🟧)")
-    asyncio.create_task(monitor_loop())
+    try:
+        await bot.send_message(CHAT_ID, "🚀 *Crypto Signal Bot* запущен (Bybit Spot)\nСледим за монетами.", timeout=30)
+    except TelegramNetworkError as e:
+        print(f"❌ Telegram недоступен при старте: {e}")
+    except Exception as e:
+        print(f"❌ Ошибка при старте бота: {e}")
+
+    asyncio.create_task(signal_loop())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
