@@ -1,93 +1,138 @@
-import asyncio, logging, os, threading, time
+# p2p_signal_bot.py
+import asyncio
+import requests
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import WebAppInfo
-from dotenv import load_dotenv
-from flask import Flask, jsonify
-from bybit_api import get_p2p_data
+from aiogram.enums import ParseMode
 
-load_dotenv()
-logging.basicConfig(level=logging.INFO)
+# ==============================
+# 🔧 НАСТРОЙКИ
+# ==============================
+BOT_TOKEN = "8254878765:AAGrVibWhbH4pavhfpVDk_iTdWL8N1bU0CM"
+CHAT_ID = "491116016"
+PAIR = "USDT"
+FIAT = "KGS"
+UPDATE_INTERVAL = 45  # сек между обновлениями
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")  # сюда бот будет слать сигнал
-bot = Bot(BOT_TOKEN)
+# API адреса
+BYBIT_P2P_URL = "https://api2.bybit.com/fiat/otc/item/online"
+BINANCE_P2P_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
+
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.MARKDOWN)
 dp = Dispatcher()
 
-# === Telegram БОТ ===
-@dp.message(Command("start"))
-async def start(msg: types.Message):
-    web_app = WebAppInfo(url="https://твой-домен.uz/webapp/index.html")
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(types.KeyboardButton(text="💰 Открыть 999 USDT App", web_app=web_app))
-    await msg.answer("👋 Привет! Это 999 USDT — P2P мониторинг Bybit", reply_markup=kb)
+# ==============================
+# 📡 ЗАПРОСЫ К API
+# ==============================
+def get_bybit_p2p(side="BUY"):
+    """Bybit P2P"""
+    data = {
+        "userId": "",
+        "tokenId": PAIR,
+        "currencyId": FIAT,
+        "payment": [],
+        "side": side,
+        "size": 5,
+        "page": 1,
+        "amount": "",
+        "authMaker": False
+    }
+    try:
+        r = requests.post(BYBIT_P2P_URL, json=data, timeout=10)
+        offers = r.json()["result"]["items"]
+        parsed = []
+        for o in offers:
+            price = float(o["price"])
+            name = o["nickName"]
+            user_id = o["userId"]
+            link = f"https://www.bybit.com/p2p/user/{user_id}"
+            parsed.append({"price": price, "name": name, "link": link})
+        return parsed
+    except Exception as e:
+        print("❌ Ошибка Bybit:", e)
+        return []
 
-@dp.message(Command("kurs"))
-async def kurs(msg: types.Message):
-    buy = get_p2p_data(side="1")
-    sell = get_p2p_data(side="0")
-    if not buy or not sell:
-        await msg.answer("⚠️ Нет данных Bybit P2P.")
-        return
 
-    top_buy, top_sell = float(buy[0]["price"]), float(sell[0]["price"])
-    spread = top_buy - top_sell
-    text = (f"💰 USDT/KGS P2P\n\n"
-            f"🔼 BUY: {top_buy:.2f} KGS\n"
-            f"🔽 SELL: {top_sell:.2f} KGS\n"
-            f"📊 СПРЕД: {spread:.4f} KGS")
-    await msg.answer(text)
+def get_binance_p2p(side="BUY"):
+    """Binance P2P"""
+    data = {
+        "asset": PAIR,
+        "fiat": FIAT,
+        "tradeType": side,
+        "rows": 5,
+        "page": 1,
+        "payTypes": []
+    }
+    try:
+        r = requests.post(BINANCE_P2P_URL, json=data, timeout=10)
+        offers = r.json()["data"]
+        parsed = []
+        for o in offers:
+            price = float(o["adv"]["price"])
+            name = o["advertiser"]["nickName"]
+            link = f"https://p2p.binance.com/ru/advertiserDetail?advertiserNo={o['advertiser']['userNo']}"
+            parsed.append({"price": price, "name": name, "link": link})
+        return parsed
+    except Exception as e:
+        print("❌ Ошибка Binance:", e)
+        return []
 
-# === Flask API ===
-app = Flask(__name__)
+# ==============================
+# 💬 ФОРМИРОВАНИЕ СООБЩЕНИЙ
+# ==============================
+def format_message(source, color, buy_list, sell_list):
+    if not buy_list or not sell_list:
+        return f"{color} *{source}*\n⚠️ Нет данных.\n"
 
-@app.route("/api/p2p")
-def p2p_api():
-    buy = get_p2p_data(side="1")
-    sell = get_p2p_data(side="0")
-    if not buy or not sell:
-        return jsonify({"error": "no data"})
-    buy_price = float(buy[0]["price"])
-    sell_price = float(sell[0]["price"])
-    spread = buy_price - sell_price
-    return jsonify({
-        "buy": buy_price,
-        "sell": sell_price,
-        "spread": spread
-    })
+    best_buy = buy_list[0]
+    best_sell = sell_list[0]
+    margin = (best_buy['price'] - best_sell['price']) / best_sell['price'] * 100
 
-def run_flask():
-    app.run(host="0.0.0.0", port=8080)
+    msg = f"{color} *{source}*\n"
+    msg += f"🔼 *Покупают (BUY)* — кто хочет купить у тебя:\n"
+    for b in buy_list:
+        msg += f"• [{b['name']}]({b['link']}) — {b['price']:.2f} {FIAT}\n"
 
-# === Автоматические сигналы ===
-async def signal_monitor():
-    """Отправляет сигнал, если спред > 0.5 KGS"""
+    msg += f"\n🔽 *Продают (SELL)* — у кого ты можешь купить:\n"
+    for s in sell_list:
+        msg += f"• [{s['name']}]({s['link']}) — {s['price']:.2f} {FIAT}\n"
+
+    msg += f"\n📊 *Маржа:* `{margin:.2f}%`\n"
+    if margin > 0.3:
+        msg += "💵 Есть шанс на прибыль.\n\n"
+    else:
+        msg += "😐 Маленькая маржа.\n\n"
+
+    return msg
+
+# ==============================
+# 🔁 ОСНОВНОЙ ЦИКЛ
+# ==============================
+async def monitor_loop():
     while True:
-        buy = get_p2p_data(side="1")
-        sell = get_p2p_data(side="0")
-        if buy and sell:
-            try:
-                buy_price = float(buy[0]["price"])
-                sell_price = float(sell[0]["price"])
-                spread = buy_price - sell_price
-                if spread > 0.5:
-                    msg = (f"🚨 СПРЕД > 0.5 KGS!\n\n"
-                           f"🔼 BUY: {buy_price:.2f}\n"
-                           f"🔽 SELL: {sell_price:.2f}\n"
-                           f"📊 СПРЕД: {spread:.3f} KGS\n"
-                           f"#999USDT #Bybit")
-                    await bot.send_message(CHAT_ID, msg)
-                    logging.info(f"📢 Сигнал отправлен: {spread:.3f}")
-            except Exception as e:
-                logging.error(f"Ошибка при анализе спреда: {e}")
-        await asyncio.sleep(120)  # проверка каждые 2 минуты
+        # Bybit
+        bybit_buy = get_bybit_p2p("BUY")
+        bybit_sell = get_bybit_p2p("SELL")
+        bybit_msg = format_message("Bybit P2P", "🖤", bybit_buy, bybit_sell)
 
-# === Запуск обоих процессов ===
+        # Binance
+        binance_buy = get_binance_p2p("BUY")
+        binance_sell = get_binance_p2p("SELL")
+        binance_msg = format_message("Binance P2P", "🟧", binance_buy, binance_sell)
+
+        full_msg = bybit_msg + binance_msg
+        try:
+            await bot.send_message(CHAT_ID, full_msg)
+        except Exception as e:
+            print("Ошибка Telegram:", e)
+
+        await asyncio.sleep(UPDATE_INTERVAL)
+
+# ==============================
+# ▶️ ЗАПУСК
+# ==============================
 async def main():
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-
-    asyncio.create_task(signal_monitor())  # фоновый мониторинг
+    await bot.send_message(CHAT_ID, "🤖 P2P Signal Bot запущен. Следим за Bybit (🖤) и Binance (🟧)")
+    asyncio.create_task(monitor_loop())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
